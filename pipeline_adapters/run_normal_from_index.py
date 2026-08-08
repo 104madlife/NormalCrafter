@@ -339,6 +339,24 @@ def read_ray_evidence(state_root: Path) -> dict[str, dict[str, Any]]:
     return {key: value[1] for key, value in evidence.items()}
 
 
+def probe_video(path: Path) -> dict[str, Any]:
+    """Read the frame-level properties used by the production output gate."""
+    import decord
+
+    reader = decord.VideoReader(str(path), num_threads=1)
+    frame_count = len(reader)
+    if frame_count <= 0:
+        raise ValueError("contains no frames")
+    first_frame = reader[0]
+    height, width = first_frame.shape[:2]
+    return {
+        "frame_count": frame_count,
+        "width": int(width),
+        "height": int(height),
+        "fps": float(reader.get_avg_fps()),
+    }
+
+
 def aggregate_outputs(
     *,
     items: list[dict[str, Any]],
@@ -347,6 +365,7 @@ def aggregate_outputs(
     output_prefix: str,
     flip_y: bool = False,
     validator: Callable[[Path, str], tuple[bool, str]] = ray_batch.validate_artifact,
+    video_probe: Callable[[Path], dict[str, Any]] = probe_video,
 ) -> dict[str, Any]:
     evidence = read_ray_evidence(state_root)
     rows: list[dict[str, Any]] = []
@@ -365,6 +384,34 @@ def aggregate_outputs(
         output_filename = f"{safe_item_stem(item_id)}.mp4"
         output_key = f"{output_prefix}predicted_normal/{output_filename}"
         valid, validation_reason = validator(local_output, "video")
+        input_video: dict[str, Any] | None = None
+        output_video: dict[str, Any] | None = None
+        if valid:
+            try:
+                input_video = video_probe(Path(str(item["local_video_path"])))
+                output_video = video_probe(local_output)
+                expected_frame_count = item.get("actual_frame_count")
+                if expected_frame_count is not None and int(expected_frame_count) != int(
+                    input_video["frame_count"]
+                ):
+                    valid = False
+                    validation_reason = (
+                        "prepared GT frame count does not match the source manifest: "
+                        f"expected={expected_frame_count}, "
+                        f"actual={input_video['frame_count']}"
+                    )
+                elif int(output_video["frame_count"]) != int(
+                    input_video["frame_count"]
+                ):
+                    valid = False
+                    validation_reason = (
+                        "predicted-normal frame count does not match prepared GT: "
+                        f"input={input_video['frame_count']}, "
+                        f"output={output_video['frame_count']}"
+                    )
+            except Exception as exc:
+                valid = False
+                validation_reason = f"frame-count gate could not probe video: {exc}"
         marker = evidence.get(str(Path(str(item["local_video_path"])).resolve())) or {}
         ray_gpu_ids = [_gpu_token(value) for value in marker.get("gpu_ids") or []]
         cuda_visible = str(marker.get("cuda_visible_devices") or "").strip()
@@ -382,6 +429,10 @@ def aggregate_outputs(
                     "flip_y": flip_y,
                     "ray_gpu_ids": ray_gpu_ids,
                     "cuda_visible_devices": cuda_visible or None,
+                    "input_frame_count": input_video["frame_count"],
+                    "output_frame_count": output_video["frame_count"],
+                    "input_fps": input_video["fps"],
+                    "output_fps": output_video["fps"],
                 }
             )
         else:
@@ -393,6 +444,12 @@ def aggregate_outputs(
                     "retryable": True,
                     "ray_gpu_ids": ray_gpu_ids,
                     "cuda_visible_devices": cuda_visible or None,
+                    "input_frame_count": (
+                        input_video.get("frame_count") if input_video else None
+                    ),
+                    "output_frame_count": (
+                        output_video.get("frame_count") if output_video else None
+                    ),
                 }
             )
 

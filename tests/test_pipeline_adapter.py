@@ -148,9 +148,9 @@ class PipelineAdapterTests(unittest.TestCase):
         output_root = self.root / "normal_outputs"
         state_root = self.root / "state"
         for index, item in enumerate(items):
-            output = output_root / f"{adapter.safe_item_stem(item['item_id'])}.mp4"
+            output = output_root / Path(item["local_video_path"]).name
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(b"normal")
+            shutil.copyfile(item["local_video_path"], output)
             adapter.write_json(
                 state_root / ".done" / f"job-{index}.json",
                 {
@@ -181,7 +181,7 @@ class PipelineAdapterTests(unittest.TestCase):
         }
         output_root = self.root / "normal_outputs"
         output_root.mkdir()
-        (output_root / "source-name.mp4").write_bytes(b"normal")
+        shutil.copyfile(source, output_root / "source-name.mp4")
 
         result = adapter.aggregate_outputs(
             items=[item],
@@ -197,6 +197,59 @@ class PipelineAdapterTests(unittest.TestCase):
             output_key,
             "smoke/run/predicted_normal/stable__GT__slice_000007.mp4",
         )
+
+    def test_aggregate_rejects_frame_count_mismatch(self):
+        source = self.make_video("inputs/source.mp4")
+        output_root = self.root / "normal_outputs"
+        output_root.mkdir()
+        output = output_root / source.name
+        writer = cv2.VideoWriter(
+            str(output), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (16, 16)
+        )
+        self.assertTrue(writer.isOpened())
+        writer.write(np.zeros((16, 16, 3), dtype=np.uint8))
+        writer.release()
+        item = {
+            "item_id": "strict__GT__slice_000000",
+            "channel": "GT",
+            "local_video_path": str(source),
+            "actual_frame_count": 2,
+        }
+
+        result = adapter.aggregate_outputs(
+            items=[item],
+            output_root=output_root,
+            state_root=self.root / "state",
+            output_prefix="smoke/run/",
+        )
+
+        self.assertEqual(result["success_count"], 0)
+        self.assertEqual(result["failure_count"], 1)
+        self.assertEqual(result["failed_rows"][0]["input_frame_count"], 2)
+        self.assertEqual(result["failed_rows"][0]["output_frame_count"], 1)
+        self.assertIn("frame count does not match", result["failed_rows"][0]["error"])
+
+    def test_aggregate_rejects_manifest_input_frame_mismatch(self):
+        source = self.make_video("inputs/source.mp4")
+        output_root = self.root / "normal_outputs"
+        output_root.mkdir()
+        shutil.copyfile(source, output_root / source.name)
+        item = {
+            "item_id": "strict__GT__slice_000000",
+            "channel": "GT",
+            "local_video_path": str(source),
+            "actual_frame_count": 81,
+        }
+
+        result = adapter.aggregate_outputs(
+            items=[item],
+            output_root=output_root,
+            state_root=self.root / "state",
+            output_prefix="smoke/run/",
+        )
+
+        self.assertEqual(result["failure_count"], 1)
+        self.assertIn("source manifest", result["failed_rows"][0]["error"])
 
     def fake_ray_run(self, command: list[str], *, distinct_gpus: bool = True):
         input_list = Path(command[command.index("--input-list") + 1])
