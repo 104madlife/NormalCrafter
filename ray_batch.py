@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import errno
 import fcntl
 import gc
 import hashlib
@@ -329,6 +330,29 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def finalize_artifact(source: Path, destination: Path) -> None:
+    """Move an artifact into place, including across filesystem boundaries."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(source, destination)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+
+    temporary = destination.parent / (
+        f".{destination.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
+    )
+    try:
+        shutil.copy2(source, temporary)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+        source.unlink()
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def valid_done_marker(job: Job, output_root: Path, state_root: Path) -> bool:
     marker_path = _state_path(state_root, "done", job.job_id)
     try:
@@ -465,8 +489,7 @@ def create_worker_class(ray: Any) -> Any:
                             "Generated artifact type does not match the job"
                         )
                     destination = self.output_root / expected["path"]
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(source, destination)
+                    finalize_artifact(source, destination)
                     final_paths.append(expected["path"])
 
                 manifest_outputs = [

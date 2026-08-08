@@ -1,4 +1,5 @@
 import json
+import errno
 import os
 import tempfile
 import unittest
@@ -188,6 +189,25 @@ class BatchStateTests(unittest.TestCase):
         self.assertEqual(failed, [])
         self.assertEqual(json.loads(marker_path.read_text())["job_id"], job.job_id)
         self.assertEqual(list(marker_path.parent.glob("*.tmp-*")), [])
+
+    def test_finalize_artifact_falls_back_across_filesystems(self):
+        source = self.root / "partial" / "normal.mp4"
+        destination = self.root / "outputs" / "normal.mp4"
+        source.parent.mkdir()
+        source.write_bytes(b"predicted-normal")
+        real_replace = os.replace
+
+        def cross_device_once(raw_source, raw_destination):
+            if Path(raw_source) == source:
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            return real_replace(raw_source, raw_destination)
+
+        with mock.patch("ray_batch.os.replace", side_effect=cross_device_once):
+            ray_batch.finalize_artifact(source, destination)
+
+        self.assertFalse(source.exists())
+        self.assertEqual(destination.read_bytes(), b"predicted-normal")
+        self.assertEqual(list(destination.parent.glob(".*.tmp-*")), [])
 
     def test_replaced_same_size_output_is_requeued(self):
         video = self.make_video_placeholder("clip.mp4")
