@@ -68,3 +68,70 @@ python run.py  --video-path examples/example_01.mp4
 ```bash
 python run.py  --video-path examples/example_01.mp4 --max-res 512
 ```
+
+### Multi-GPU batch inference
+
+Install the optional Ray dependency and process a directory with one persistent
+worker per GPU:
+
+```bash
+pip install -r requirements-batch.txt
+python ray_batch.py \
+  --input /data/videos \
+  --output /data/normalcrafter-results \
+  --workers 8 \
+  --retries 2
+```
+
+Completed videos are validated and recorded under `.done` in the output
+directory. Running the same command again skips them without loading the model.
+Exhausted failures are recorded under `.failed`; pass `--retry-failed` to retry
+them. Use `--input-list paths.txt` for a newline-separated manifest and
+`--dry-run` to inspect pending work without starting Ray.
+
+To write canonical UDN-v2 camera normals, enable both the standard conversion
+and float NPZ output:
+
+```bash
+python ray_batch.py \
+  --input /data/videos \
+  --output /data/normalcrafter-udn \
+  --workers 8 \
+  --save-npz \
+  --normal-standard udn-v2 \
+  --offline
+```
+
+Each job writes a float32 NPZ containing `normal` and `valid_mask`, a UDN-v2
+manifest, and an H.264 preview. The NPZ is the canonical artifact; the preview
+is transport-approximate. By default the conversion preserves NormalCrafter's
+axis directions, normalizes the vectors, and preserves signed `Nz`.
+Independent RGB normals must be decoded with `normalize(2*RGB-1)`; do not flip
+vectors per pixel when decoded `Nz` is negative.
+
+For a compact dataset containing only same-name UDN normal MP4 files, keep the
+resume state outside the output directory:
+
+```bash
+python ray_batch.py \
+  --input /data/videos \
+  --output /data/normal-videos \
+  --state-dir /data/normal-videos-state \
+  --output-mode normal-video-only \
+  --normal-standard udn-v2 \
+  --workers 8 \
+  --offline
+```
+
+This mode preserves the input-relative filename, writes BT.709 Limited
+H.264/yuv420p, and leaves only MP4 files under `--output`. Because the transport
+is lossy 8-bit YUV420, these files are UDN-v2 transport-approximate rather than
+canonical float normals. Batch schema 6 records the Y transform and signed-Z
+semantics, so incompatible earlier outputs are scheduled for regeneration.
+
+The optional `--flip-y` switch applies the fixed transform `Ny=-Ny`. It is off
+by default, leaving NormalCrafter ground normals green. Enabling it produces the
+legacy Y-reflected convention with magenta/red ground and marks the manifest as
+non-conformant. `--no-flip-y` explicitly selects the default behavior. The old
+`--normal-standard udn-v1` spelling remains accepted as a deprecated alias for
+`udn-v2`.
