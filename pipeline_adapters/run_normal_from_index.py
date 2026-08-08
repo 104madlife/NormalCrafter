@@ -357,12 +357,13 @@ def aggregate_outputs(
 
     for item in items:
         item_id = str(item["item_id"])
-        filename = f"{safe_item_stem(item_id)}.mp4"
-        if filename in seen_names:
-            raise AdapterFailure(f"Duplicate normalized item filename: {filename}")
-        seen_names.add(filename)
-        local_output = output_root / filename
-        output_key = f"{output_prefix}predicted_normal/{filename}"
+        input_filename = Path(str(item["local_video_path"])).with_suffix(".mp4").name
+        if input_filename in seen_names:
+            raise AdapterFailure(f"Duplicate prepared input filename: {input_filename}")
+        seen_names.add(input_filename)
+        local_output = output_root / input_filename
+        output_filename = f"{safe_item_stem(item_id)}.mp4"
+        output_key = f"{output_prefix}predicted_normal/{output_filename}"
         valid, validation_reason = validator(local_output, "video")
         marker = evidence.get(str(Path(str(item["local_video_path"])).resolve())) or {}
         ray_gpu_ids = [_gpu_token(value) for value in marker.get("gpu_ids") or []]

@@ -172,6 +172,32 @@ class PipelineAdapterTests(unittest.TestCase):
         self.assertEqual(result["failure_count"], 0)
         self.assertEqual(result["used_ray_gpu_ids"], ["0", "1"])
 
+    def test_aggregate_reads_source_basename_but_uses_stable_item_key(self):
+        source = self.make_video("inputs/source-name.mp4")
+        item = {
+            "item_id": "stable__GT__slice_000007",
+            "channel": "GT",
+            "local_video_path": str(source),
+        }
+        output_root = self.root / "normal_outputs"
+        output_root.mkdir()
+        (output_root / "source-name.mp4").write_bytes(b"normal")
+
+        result = adapter.aggregate_outputs(
+            items=[item],
+            output_root=output_root,
+            state_root=self.root / "state",
+            output_prefix="smoke/run/",
+            validator=lambda _path, _kind: (True, "ok"),
+        )
+
+        local_path, output_key = result["success_files"][0]
+        self.assertEqual(local_path.name, "source-name.mp4")
+        self.assertEqual(
+            output_key,
+            "smoke/run/predicted_normal/stable__GT__slice_000007.mp4",
+        )
+
     def fake_ray_run(self, command: list[str], *, distinct_gpus: bool = True):
         input_list = Path(command[command.index("--input-list") + 1])
         output_root = Path(command[command.index("--output") + 1])
